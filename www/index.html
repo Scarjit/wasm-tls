@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Wasm TLS Example</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        line-height: 1.6;
+      }
+      .container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .column {
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+      }
+      h2 {
+        margin-top: 0;
+        padding-bottom: 5px;
+        border-bottom: 1px solid #eee;
+      }
+      .output {
+        white-space: pre;
+        border: 1px solid #ccc;
+        padding: 10px;
+        margin-top: 10px;
+        height: 400px;
+        overflow: auto;
+        font-family: monospace;
+        background-color: #f9f9f9;
+      }
+      button {
+        padding: 8px 15px;
+        margin-top: 10px;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      input {
+        width: 90%;
+        padding: 8px;
+        margin-top: 10px;
+      }
+      .client-prefix {
+        color: #2196F3;
+        font-weight: bold;
+      }
+      .server-prefix {
+        color: #4CAF50;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Wasm TLS Client-Server Communication</h1>
+    <p>This example demonstrates TLS communication between a client and server, both running in WebAssembly.</p>
+    
+    <div class="container">
+      <div class="column">
+        <h2>TLS Client</h2>
+        <input id="clientRequest" type="text" value="{'message': 'Hello, server!'}" />
+        <button id="sendClientRequest">Send Request</button>
+      </div>
+      
+      <div class="column">
+        <h2>Communication Log</h2>
+        <div id="output" class="output"></div>
+      </div>
+    </div>
+    
+    <script type="module">
+      import init, * as wasmModule from "./pkg/wasm_tls.js";
+      
+      const log = (prefix, msg) => {
+        const output = document.getElementById('output');
+        output.textContent += `[${prefix}] ${msg}\n`;
+        output.scrollTop = output.scrollHeight;
+      };
+      
+      const logClient = (msg) => log('CLIENT', msg);
+      const logServer = (msg) => log('SERVER', msg);
+
+      // Helper function to convert bytes to hex string
+      function bytesToHex(bytes) {
+        return Array.from(bytes)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+      }
+
+      async function run() {
+        // Initialize the WASM module
+        await init();
+        logClient("WASM module initialized");
+        logServer("WASM module initialized");
+        
+        // Create TLS client and server
+        wasmModule.create_client("localhost");
+        logClient("TLS client created");
+        
+        try {
+          await wasmModule.create_server();
+          logServer("TLS server created");
+        } catch (err) {
+          logServer(`Error creating server: ${err.message || err}`);
+        }
+
+        // Add event listeners for buttons
+        document.getElementById('sendClientRequest').addEventListener('click', sendClientRequest);
+      }
+      
+      // Client sends a request to the server
+      async function sendClientRequest() {
+        try {
+          const request = document.getElementById('clientRequest').value;
+          logClient("Sending request: " + request.substring(0, request.indexOf('\n')));
+          
+          // Write the request to the TLS client
+          await wasmModule.write_request(request);
+          
+          // Process TLS on the client side (encrypt the data)
+          await wasmModule.process_tls();
+          
+          // Get the encrypted data
+          const encryptedData = await wasmModule.get_data();
+          logClient(`Encrypted data: ${encryptedData.length} bytes`);
+          
+          // Send the encrypted data to the server
+          await wasmModule.server_send_data(encryptedData);
+          logServer(`Received encrypted data: ${encryptedData.length} bytes`);
+          
+          // Start the automatic TLS handshake and response process
+          await handleTLSCommunication();
+        } catch (err) {
+          logClient(`Error: ${err.message || err}`);
+        }
+      }
+
+      // Handle the TLS communication automatically
+      async function handleTLSCommunication() {
+        try {
+          let hasApplicationData = false;
+          let handshakeStep = 0;
+          
+          while (!hasApplicationData) {
+            handshakeStep++;
+            logClient(`TLS Handshake Step ${handshakeStep}`);
+            logServer(`TLS Handshake Step ${handshakeStep}`);
+            
+            // Process TLS on the server side
+            try {
+              await wasmModule.server_process_tls();
+              logServer("Server processed TLS successfully");
+            } catch (err) {
+              logServer(`Server TLS processing error: ${err.message || err}`);
+              if (err.message.includes("would block")) {
+                logServer("Waiting for more data from client...");
+                continue;
+              }
+              throw err;
+            }
+            
+            // Check if we have data to send back
+            const serverData = await wasmModule.server_get_data();
+            if (serverData && serverData.length > 0) {
+              logServer(`Sending TLS data (${serverData.length} bytes):`);
+              logServer(bytesToHex(serverData));
+              
+              // Send the data to the client
+              await wasmModule.send_data(serverData);
+              logClient(`Received TLS data (${serverData.length} bytes):`);
+              logClient(bytesToHex(serverData));
+              
+              // Process TLS on the client side
+              try {
+                await wasmModule.process_tls();
+                logClient("Client processed TLS successfully");
+              } catch (err) {
+                logClient(`Client TLS processing error: ${err.message || err}`);
+                if (err.message.includes("would block")) {
+                  logClient("Waiting for more data from server...");
+                  continue;
+                }
+                throw err;
+              }
+              
+              // Check if we have application data
+              const decryptedResponse = await wasmModule.read_response();
+              if (decryptedResponse) {
+                logClient("Decrypted response: " + decryptedResponse.substring(0, decryptedResponse.indexOf('\n')));
+                hasApplicationData = true;
+              }
+            } else {
+              logServer("No data to send back from server");
+              break;
+            }
+          }
+        } catch (err) {
+          logClient(`Error in TLS communication: ${err.message || err}`);
+          logServer(`Error in TLS communication: ${err.message || err}`);
+        }
+      }
+      
+      run().catch(err => {
+        console.error("Initialization error:", err);
+        logClient(`Error: ${err.message || err}`);
+        logServer(`Error: ${err.message || err}`);
+      });
+    </script>
+  </body>
+</html> 
