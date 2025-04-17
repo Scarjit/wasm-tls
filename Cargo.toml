@@ -13,6 +13,7 @@ console_error_panic_hook = { version = "0.1.7", optional = true }
 wee_alloc = { version = "0.4.5", optional = true }
 rustls-pemfile = "2.0.0"
 rustls-webpki = "0.103.1"
+rustls-pki-types = "1.11.0"
 
 [dependencies.rustls]
 version = "0.23.26"

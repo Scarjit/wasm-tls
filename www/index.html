@@ -56,15 +56,14 @@
     </div>
     
     <script type="module">
-      import initClient, * as wasmModuleClient from "./pkg/wasm_tls.js";
-      import initServer, * as wasmModuleServer from "./pkg/wasm_tls.js";
-
+      import initClient, * as wasmModuleClient from "./pkg/wasm_tls.js?client";
+      import initServer, * as wasmModuleServer from "./pkg/wasm_tls.js?server";
       const log = (prefix, msg) => {
         const output = document.getElementById('output');
-        output.textContent += `[${prefix}] ${msg}\n`;
+        const timestamp = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 23);
+        output.textContent += `${timestamp} [${prefix}] ${msg}\n`;
         output.scrollTop = output.scrollHeight;
       };
-      
       const logClient = (msg) => log('CLIENT', msg);
       const logServer = (msg) => log('SERVER', msg);
 
@@ -134,6 +133,13 @@
               logServer(`TLS Handshake Step ${handshakeStep}`);
             }
 
+            if (handshakeStep >= 15) {
+                // Abort
+                logClient("Handshake failed. Aborting.");
+                logServer("Handshake failed. Aborting.");
+                return;
+            }
+
             // Process data on server side
             if (clientData) {
               await wasmModuleServer.server_send_data(clientData);
@@ -147,14 +153,21 @@
               const serverData = await wasmModuleServer.server_get_data();
               
               // Check for decrypted request on server side
-              const decryptedRequest = await wasmModuleServer.server_read_request();
-              if (decryptedRequest) {
-                logServer("Decrypted request: " + decryptedRequest);
-                
-                // Write response back
-                const response = JSON.stringify({ message: 'Hello back, client!' });
-                await wasmModuleServer.server_write_response(response);
-                logServer("Sending response: " + response);
+              try {
+                const decryptedRequest = await wasmModuleServer.server_read_request();
+                if (decryptedRequest) {
+                  logServer("Decrypted request: " + decryptedRequest);
+                  
+                  // Write response back
+                  const response = JSON.stringify({ message: 'Hello back, client!' });
+                  await wasmModuleServer.server_write_response(response);
+                  logServer("Sending response: " + response);
+                }
+              } catch (err) {
+                // Ignore errors when no request is available
+                if (!err.message.includes("n != server.available_bytes")) {
+                  logServer(`Error reading request: ${err.message || err}`);
+                }
               }
 
               // Process data on client side
@@ -168,22 +181,51 @@
                 logClient("Client processed TLS successfully");
                 
                 // Check for decrypted response
-                const decryptedResponse = await wasmModuleClient.read_response();
-                if (decryptedResponse) {
-                  logClient("Decrypted response: " + decryptedResponse);
-                  handshakeComplete = true;
+                try {
+                  const decryptedResponse = await wasmModuleClient.read_response();
+                  if (decryptedResponse) {
+                    logClient("Decrypted response: " + decryptedResponse);
+                    handshakeComplete = true;
+                  }
+                } catch (err) {
+                  // Ignore errors when no response is available
+                  if (!err.message.includes("n != client.available_bytes")) {
+                    logClient(`Error reading response: ${err.message || err}`);
+                  }
                 }
                 
                 // Get new client data for next iteration
                 clientData = await wasmModuleClient.get_data();
               } else {
                 logServer("No data to send back from server");
+                // Force TLS to continue processing by sending a dummy message from client if handshake isn't complete
+                if (!handshakeComplete && handshakeStep >= 3 && handshakeStep < 10) {
+                  try {
+                    await wasmModuleClient.process_tls();
+                    clientData = await wasmModuleClient.get_data();
+                    if (clientData.length === 0) {
+                      logClient("Handshake stalled. Forcing client to continue...");
+                      await wasmModuleServer.server_process_tls();
+                      const serverData = await wasmModuleServer.server_get_data();
+                      if (serverData && serverData.length > 0) {
+                        await wasmModuleClient.send_data(serverData);
+                        await wasmModuleClient.process_tls();
+                        clientData = await wasmModuleClient.get_data();
+                      }
+                    }
+                  } catch (err) {
+                    logClient(`Error forcing handshake: ${err.message || err}`);
+                  }
+                }
               }
             }
 
-            // Continue the loop if handshake is not complete
-            if (!handshakeComplete) {
+            // Continue the loop if handshake is not complete or if there's data to process
+            if (!handshakeComplete || clientData?.length > 0) {
               setTimeout(tick, 100);
+            } else {
+              logClient("Handshake complete or no more data to process.");
+              logServer("Handshake complete or no more data to process.");
             }
           } catch (err) {
             if (err.message && err.message.includes("would block")) {
@@ -192,6 +234,11 @@
             } else {
               logClient(`Error in TLS communication: ${err.message || err}`);
               logServer(`Error in TLS communication: ${err.message || err}`);
+              
+              // Try to continue the handshake even after errors
+              if (!handshakeComplete && handshakeStep < 10) {
+                setTimeout(tick, 100);
+              }
             }
           }
         };
