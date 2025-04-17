@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Wasm TLS Server</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        line-height: 1.6;
+      }
+      .container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .column {
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+      }
+      h2 {
+        margin-top: 0;
+        padding-bottom: 5px;
+        border-bottom: 1px solid #eee;
+      }
+      .output {
+        white-space: pre;
+        border: 1px solid #ccc;
+        padding: 10px;
+        margin-top: 10px;
+        height: 600px;
+        overflow: auto;
+        font-family: monospace;
+        background-color: #f9f9f9;
+      }
+      .server-prefix {
+        color: #4CAF50;
+        font-weight: bold;
+      }
+      .controls {
+        margin-bottom: 15px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      button {
+        padding: 10px 20px;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+        transition: background-color 0.3s;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      button:disabled {
+        background-color: #cccccc;
+        cursor: not-allowed;
+      }
+      .status {
+        font-weight: bold;
+        margin-left: 15px;
+      }
+      .connected {
+        color: #2196F3;
+      }
+      .disconnected {
+        color: #f44336;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Wasm TLS Server</h1>
+    <p>Open the <a href="client.html" target="_blank">client page</a> in another window to start communication.</p>
+    
+    <div class="container">
+      <div class="column">
+        <div class="controls">
+          <button id="resetButton">Reset Server</button>
+          <span id="status" class="status disconnected">Client: Disconnected</span>
+        </div>
+        <h2>Server Communication Log</h2>
+        <div id="output" class="output"></div>
+      </div>
+    </div>
+
+    <script type="module">
+      import initServer, * as wasmModuleServer from "./pkg/wasm_tls.js?server";
+      
+      // Create broadcast channels
+      const clientChannel = new BroadcastChannel('tls-client-channel');
+      const serverChannel = new BroadcastChannel('tls-server-channel');
+      
+      // Variables for tracking state
+      let serverInitialized = false;
+      let handshakeComplete = false;
+      let handshakeStep = 0;
+      let lastCounter = -1;
+      let lastProcessedData = null;
+      let hasResponsePending = false;
+
+      const logServer = (msg) => {
+        const output = document.getElementById('output');
+        const timestamp = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 23);
+        output.textContent += `${timestamp} [SERVER] ${msg}\n`;
+        output.scrollTop = output.scrollHeight;
+      };
+      
+      // Helper function to convert bytes to hex string
+      const bytesToHex = (bytes) => {
+        return Array.from(bytes)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+      };
+      
+      let clientConnected = false;
+      
+      // Function to process client data
+      async function processClientData(clientData) {
+        if (!serverInitialized) return;
+        
+        try {
+          // Track handshake steps
+          if (!handshakeComplete) {
+            handshakeStep++;
+            logServer(`TLS Handshake Step ${handshakeStep}`);
+          }
+          
+          // Skip if we've already processed this exact data
+          if (clientData && lastProcessedData && 
+              clientData.length === lastProcessedData.length &&
+              clientData.every((val, idx) => val === lastProcessedData[idx])) {
+            logServer("Skipping already processed client data");
+            return;
+          }
+          
+          // Process client data
+          if (clientData && clientData.length > 0) {
+            logServer(`Received encrypted data: ${clientData.length} bytes`);
+            
+            // Save this data to avoid reprocessing
+            lastProcessedData = clientData;
+            
+            wasmModuleServer.server_send_data(clientData);
+            wasmModuleServer.server_process_tls();
+            logServer("Server processed TLS successfully");
+            
+            // Check if we have a pending response from a previous request
+            if (hasResponsePending) {
+              logServer("Server has a pending response - checking if it's available");
+              const pendingData = wasmModuleServer.server_get_data();
+              if (pendingData && pendingData.length > 0) {
+                logServer(`Returning pending response data (${pendingData.length} bytes)`);
+                hasResponsePending = false;
+                sendToClient(pendingData);
+                return;
+              }
+            }
+            
+            try {
+              const decryptedRequest = wasmModuleServer.server_read_request();
+              if (decryptedRequest) {
+                logServer("Decrypted request: " + decryptedRequest);
+                handshakeComplete = true;
+                
+                // Parse the client request to get the counter
+                try {
+                  const requestObj = JSON.parse(decryptedRequest);
+                  let counter = 0;
+                  
+                  if (requestObj.cnt !== undefined) {
+                    counter = requestObj.cnt;
+                    logServer(`Received counter ${counter} from client`);
+                    
+                    // Only process if this is a new counter value (avoid duplicates)
+                    if (counter > lastCounter) {
+                      lastCounter = counter;
+                      
+                      // Increment the counter
+                      counter += 1;
+                      
+                      // Write response back with incremented counter
+                      const response = JSON.stringify({ 
+                        message: 'Hello back, client!',
+                        cnt: counter
+                      });
+                      wasmModuleServer.server_write_response(response);
+                      logServer("Sending response: " + response);
+                      
+                      // Mark that we have a response pending
+                      hasResponsePending = true;
+                      
+                      // Force getting the data after writing the response
+                      wasmModuleServer.server_process_tls();
+                      const serverData = wasmModuleServer.server_get_data();
+                      if (serverData && serverData.length > 0) {
+                        logServer(`Generated server data (${serverData.length} bytes) after writing response`);
+                        hasResponsePending = false;
+                        sendToClient(serverData);
+                      } else {
+                        logServer("No data generated after writing response");
+                      }
+                    } else {
+                      logServer(`Ignoring duplicate request with counter: ${counter}`);
+                    }
+                  } else {
+                    logServer("Request did not contain a counter value");
+                  }
+                } catch (parseErr) {
+                  logServer(`Error parsing client request: ${parseErr.message}`);
+                }
+              } else {
+                logServer("No decrypted request available yet");
+              }
+            } catch (err) {
+              logServer(`Server error: ${err.message || err}`);
+            }
+            
+            // Always check for server data even if no request was decrypted
+            const serverData = wasmModuleServer.server_get_data();
+            if (serverData && serverData.length > 0) {
+              logServer(`Generated server data (${serverData.length} bytes)`);
+              sendToClient(serverData);
+            } else {
+              logServer("No server data generated");
+            }
+          } else if (!handshakeComplete) {
+            // Try to keep handshake going
+            wasmModuleServer.server_process_tls();
+            const data = wasmModuleServer.server_get_data();
+            if (data && data.length > 0) {
+              logServer(`Generated handshake data (${data.length} bytes)`);
+              sendToClient(data);
+            } else {
+              logServer("No data to send back from server");
+            }
+          } else if (hasResponsePending) {
+            // Try to get pending response data
+            logServer("Checking for pending response data");
+            wasmModuleServer.server_process_tls();
+            const pendingData = wasmModuleServer.server_get_data();
+            if (pendingData && pendingData.length > 0) {
+              logServer(`Found pending response data (${pendingData.length} bytes)`);
+              hasResponsePending = false;
+              sendToClient(pendingData);
+            } else {
+              logServer("No pending response data available");
+            }
+          }
+        } catch (err) {
+          logServer(`Server error: ${err.message || err}`);
+        }
+      }
+      
+      // Send data to client
+      function sendToClient(data) {
+        if (data) {
+          serverChannel.postMessage({
+            type: 'server-data',
+            data: Array.from(data)
+          });
+        }
+      }
+      
+      // Reset server state
+      function resetServer() {
+        serverInitialized = false;
+        handshakeComplete = false;
+        handshakeStep = 0;
+        lastCounter = -1;
+        lastProcessedData = null;
+        hasResponsePending = false;
+        
+        document.getElementById('output').textContent = '';
+        
+        init();
+      }
+      
+      // Initialize the server
+      async function init() {
+        try {
+          const resetButton = document.getElementById('resetButton');
+          const statusElement = document.getElementById('status');
+          
+          // Initialize WASM module
+          await initServer();
+          logServer("WASM module initialized");
+          
+          // Create TLS server
+          await wasmModuleServer.create_server();
+          logServer("TLS server created");
+          
+          serverInitialized = true;
+          
+          // Listen for client messages
+          clientChannel.onmessage = (event) => {
+            if (event.data.type === 'client-data') {
+              const clientData = new Uint8Array(event.data.data);
+              processClientData(clientData);
+            } else if (event.data.type === 'client-ping') {
+              serverChannel.postMessage({ type: 'server-ping' });
+              if (!clientConnected) {
+                clientConnected = true;
+                statusElement.textContent = "Client: Connected";
+                statusElement.className = "status connected";
+              }
+            } else if (event.data.type === 'client-pong') {
+              if (!clientConnected) {
+                clientConnected = true;
+                statusElement.textContent = "Client: Connected";
+                statusElement.className = "status connected";
+              }
+            }
+          };
+          
+          // Send periodic pings to check client connection
+          setInterval(() => {
+            serverChannel.postMessage({ type: 'server-ping' });
+            
+            // If client doesn't respond, mark as disconnected
+            setTimeout(() => {
+              if (!clientConnected) {
+                statusElement.textContent = "Client: Disconnected";
+                statusElement.className = "status disconnected";
+              }
+            }, 2000);
+          }, 2000);
+          
+          // Reset button event listener
+          resetButton.addEventListener('click', () => {
+            if (confirm("Are you sure you want to reset the server state?")) {
+              resetServer();
+            }
+          });
+          
+          logServer("Server ready and waiting for client data");
+          
+        } catch (err) {
+          console.error("Initialization error:", err);
+          logServer(`Error: ${err.message || err}`);
+        }
+      }
+      
+      // Start the application when the page loads
+      init();
+      
+      // Send a ping to check if client is available
+      serverChannel.postMessage({ type: 'server-ping' });
+      
+      // Set up a periodic check to continue the handshake if it stalls
+      setInterval(() => {
+        if (serverInitialized && !handshakeComplete && handshakeStep > 0) {
+          logServer("Continuing handshake processing...");
+          // Force TLS processing to continue handshake
+          wasmModuleServer.server_process_tls();
+          const serverData = wasmModuleServer.server_get_data();
+          if (serverData && serverData.length > 0) {
+            logServer(`Generated server handshake data: ${serverData.length} bytes`);
+            sendToClient(serverData);
+          } else if (handshakeStep >= 2 && handshakeStep < 4) {
+            // Special case: if we're in the middle of the handshake but not generating data,
+            // force certificate sending
+            logServer("Forcing certificate data generation...");
+            // This special processing helps move past stalled handshakes
+            wasmModuleServer.server_process_tls();
+            const forceData = wasmModuleServer.server_get_data();
+            if (forceData && forceData.length > 0) {
+              logServer(`Generated forced certificate data: ${forceData.length} bytes`);
+              sendToClient(forceData);
+            }
+          }
+        }
+      }, 200); // Check every 200ms during handshake
+    </script>
+  </body>
+</html> 
