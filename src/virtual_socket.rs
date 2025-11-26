@@ -33,7 +33,7 @@ impl Read for VirtualSocket {
         if self.read_buffer.is_empty() {
             return Ok(0);
         }
-        
+
         let n = std::cmp::min(buf.len(), self.read_buffer.len());
         let data = self.read_buffer.drain(0..n).collect::<Vec<u8>>();
         buf[0..n].copy_from_slice(&data);
@@ -50,4 +50,4 @@ impl Write for VirtualSocket {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-} 
+}

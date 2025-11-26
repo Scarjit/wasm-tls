@@ -30,4 +30,7 @@ wee_alloc = ["dep:wee_alloc"]
 
 [profile.release]
 opt-level = "s"
-lto = true 
+lto = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

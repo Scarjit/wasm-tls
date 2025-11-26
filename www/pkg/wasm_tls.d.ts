@@ -1,39 +1,39 @@
 /* tslint:disable */
 /* eslint-disable */
-export function create_client(remote_host: string): void;
-export function send_data(data: Uint8Array): void;
-export function get_data(): Uint8Array;
-export function process_tls(): void;
-export function write_request(request: string): void;
-export function read_response(): string;
-export function create_server(): void;
-export function server_send_data(data: Uint8Array): void;
 export function server_get_data(): Uint8Array;
 export function server_process_tls(): void;
+export function server_send_data(data: Uint8Array): void;
+export function create_server(): void;
 export function server_read_request(): string;
 export function server_write_response(response: string): void;
-export function main_js(): void;
+export function read_response(): string;
+export function create_client(remote_host: string): void;
+export function get_data(): Uint8Array;
+export function write_request(request: string): void;
+export function process_tls(): void;
+export function send_data(data: Uint8Array): void;
 export function greet(name: string): string;
+export function main_js(): void;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly create_client: (a: number, b: number) => void;
-  readonly send_data: (a: number, b: number) => [number, number];
-  readonly get_data: () => [number, number, number, number];
-  readonly process_tls: () => [number, number];
-  readonly write_request: (a: number, b: number) => [number, number];
-  readonly read_response: () => [number, number, number, number];
   readonly ring_core_0_17_14__bn_mul_mont: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly create_server: () => [number, number];
-  readonly server_send_data: (a: number, b: number) => [number, number];
   readonly server_get_data: () => [number, number, number, number];
   readonly server_process_tls: () => [number, number];
   readonly server_read_request: () => [number, number, number, number];
+  readonly server_send_data: (a: number, b: number) => [number, number];
   readonly server_write_response: (a: number, b: number) => [number, number];
-  readonly main_js: () => void;
+  readonly create_client: (a: number, b: number) => void;
+  readonly get_data: () => [number, number, number, number];
+  readonly process_tls: () => [number, number];
+  readonly read_response: () => [number, number, number, number];
+  readonly send_data: (a: number, b: number) => [number, number];
+  readonly write_request: (a: number, b: number) => [number, number];
   readonly greet: (a: number, b: number) => [number, number];
+  readonly main_js: () => void;
   readonly __wbindgen_exn_store: (a: number) => void;
   readonly __externref_table_alloc: () => number;
   readonly __wbindgen_export_2: WebAssembly.Table;
